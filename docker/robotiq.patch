@@ -1,0 +1,28 @@
+From a26058648203d4d7b38033126805d0459488d397 Mon Sep 17 00:00:00 2001
+From: Andrea Rosasco <andrearosasco.ar@gmail.com>
+Date: Sun, 25 Feb 2024 17:24:09 +0100
+Subject: [PATCH 2/2] action_server now expects gripper distance as goal
+
+---
+ .../robotiq_85_driver/single_robotiq_85_action_server.py     | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/robotiq_85_driver/robotiq_85_driver/single_robotiq_85_action_server.py b/robotiq_85_driver/robotiq_85_driver/single_robotiq_85_action_server.py
+index 1af8be9..3aa91cd 100644
+--- a/robotiq_85_driver/robotiq_85_driver/single_robotiq_85_action_server.py
++++ b/robotiq_85_driver/robotiq_85_driver/single_robotiq_85_action_server.py
+@@ -120,9 +120,8 @@ class Robotiq85ActionServer(Node):
+         self.get_logger().debug('Gripper executing goal...')
+ 
+         # Approximately convert angular joint position at knuckle to linear distance between jaws
+-        gripper_jaw_distance = min(max(0.085 - (0.085/0.8) * goal_handle.request.command.position, 0.0), 0.8)
+-
+-        self.get_logger().debug('Angle: ' + str(goal_handle.request.command.position) + ' Distance: ' + str(gripper_jaw_distance))
++        gripper_jaw_distance = goal_handle.request.command.position
++        self.get_logger().debug('Distance: ' + str(gripper_jaw_distance))
+ 
+         # Send goal to gripper 
+         cmd_msg = GripperCmd()
+-- 
+2.25.1
+

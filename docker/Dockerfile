@@ -6,9 +6,12 @@ ARG PASSWORD=robotdataset
  
 ARG CONDA_SCRIPT=Miniforge3-23.3.1-1-Linux-x86_64.sh
 ARG CONDA_LINK=https://github.com/conda-forge/miniforge/releases/download/23.3.1-1/${CONDA_SCRIPT}
-ARG CONDA_MD5=aef279d6baea7f67940f16aad17ebe5f6aac97487c7c03466ff01f4819e5a651
 
-ARG pip=/home/${USER}/miniforge3/envs/${USER}/bin/pip
+ARG CONDA_PREFIX=/home/${USER}/miniforge3/envs/${USER}
+
+ARG pip=${CONDA_PREFIX}/bin/pip
+ARG colcon=${CONDA_PREFIX}/bin/colcon
+
 ARG PYTHONDONTWRITEBYTECODE=true
 
 # Setup timezone and install base packages
@@ -53,13 +56,24 @@ RUN wget https://packagecloud.io/install/repositories/github/git-lfs/script.deb.
 && echo -n "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"2833\", ATTR{idProduct}==\"0183\", MODE=\"0666\", GROUP=\"plugdev\"" | sudo tee /etc/udev/rules.d/51-android.rules
 
 # Install RoboHive
+COPY ./robohive.patch ./robohive.patch
 RUN git clone --branch v0.6 --recursive https://github.com/vikashplus/robohive.git \
-&& $pip install -e robohive[a0] && /home/${USER}/miniforge3/envs/${USER}/bin/robohive_init
+&& cd robohive && git apply ../robohive.patch && rm ../robohive.patch \
+&& $pip install -e .[a0] && /home/${USER}/miniforge3/envs/${USER}/bin/robohive_init
 
-# Install panda-py
+# Install panda-ros2
 RUN wget https://github.com/JeanElsner/panda-py/releases/download/v0.7.4/panda_py_0.7.4_libfranka_0.8.0.zip \
 && unzip -d ./tmp panda_py_0.7.4_libfranka_0.8.0.zip && $pip install tmp/panda_python-0.7.4+libfranka.0.8.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl \
-&& rm -rf tmp panda_py_0.7.4_libfranka_0.8.0.zip
+&& rm -rf tmp panda_py_0.7.4_libfranka_0.8.0.zip \
+&& git clone https://github.com/andrearosasco/panda-ros2.git \
+&& sudo apt install -y cmake \
+&& cd panda-ros2 && $colcon build --merge-install --install-base ${CONDA_PREFIX}
+
+# Install robotiq-ros2
+COPY ./robotiq.patch ./robotiq.patch
+RUN git clone --branch 1.0.1 https://github.com/PickNikRobotics/robotiq_85_gripper.git \
+&& cd robotiq_85_gripper && git apply ../robotiq.patch && rm ../robotiq.patch \
+&& $colcon build --merge-install --install-base ${CONDA_PREFIX}
 
 RUN sudo mv /etc/sudoers.bak /etc/sudoers
 CMD ["bash"]

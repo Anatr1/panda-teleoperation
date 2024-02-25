@@ -1,0 +1,710 @@
+From 868806f179e1e1335fc49d2cda028822ad204410 Mon Sep 17 00:00:00 2001
+From: Andrea Rosasco <andrearosasco.ar@gmail.com>
+Date: Fri, 23 Feb 2024 11:15:22 +0100
+Subject: [PATCH 2/4] changed step() to reset() to avoid sudden jump
+
+---
+ robohive/envs/env_base.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/robohive/envs/env_base.py b/robohive/envs/env_base.py
+index 9bff015..1cfa7f5 100644
+--- a/robohive/envs/env_base.py
++++ b/robohive/envs/env_base.py
+@@ -130,10 +130,10 @@ class MujocoEnv(gym.Env, gym.utils.EzPickle, ObsVecDict):
+         self._setup_rgb_encoders(self.visual_keys, device=None)
+ 
+         # reset to get the env ready
+-        observation, _reward, done, _info = self.step(np.zeros(self.sim.model.nu))
++        # observation, _reward, done, _info = self.step(np.zeros(self.sim.model.nu))
+         # Question: Should we replace above with following? Its specially helpful for hardware as it forces a env reset before continuing, without which the hardware will make a big jump from its position to the position asked by step.
+-        # observation = self.reset()
+-        assert not done, "Check initialization. Simulation starts in a done state."
++        observation = self.reset()
++        # assert not done, "Check initialization. Simulation starts in a done state."
+         self.observation_space = gym.spaces.Box(obs_range[0]*np.ones(observation.size), obs_range[1]*np.ones(observation.size), dtype=np.float32)
+ 
+         return
+-- 
+2.34.1
+
+
+From 6ea0e587b9f886a021eb9bc67c18302f7d9f14e9 Mon Sep 17 00:00:00 2001
+From: Andrea Rosasco <andrearosasco.ar@gmail.com>
+Date: Fri, 23 Feb 2024 11:17:14 +0100
+Subject: [PATCH 3/4] switched from polymetis to ros
+
+---
+ robohive/robot/hardware_franka.py  | 301 +++++------------------------
+ robohive/robot/hardware_robotiq.py | 199 ++++---------------
+ robohive/robot/robot.py            |   3 +
+ 3 files changed, 92 insertions(+), 411 deletions(-)
+
+diff --git a/robohive/robot/hardware_franka.py b/robohive/robot/hardware_franka.py
+index bb2b89d..1fdb53e 100644
+--- a/robohive/robot/hardware_franka.py
++++ b/robohive/robot/hardware_franka.py
+@@ -1,277 +1,82 @@
+-""" =================================================
+-Copyright (C) 2018 Vikash Kumar
+-Author  :: Vikash Kumar (vikashplus@gmail.com)
+-Source  :: https://github.com/vikashplus/robohive
+-License :: Under Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+-================================================= """
+-
+-from cgitb import reset
+-from typing import Dict, Sized
+ import time
+-
+ import numpy as np
+-from numpy.core.fromnumeric import size
+-import torch
+ 
+-from polymetis import RobotInterface
+-import torchcontrol as toco
+-from robohive.robot.hardware_base import hardwareBase
++from panda_interface.srv import ApplyCommands, Connect, GetSensors, Close
++import rclpy
++from rclpy.node import Node
++from panda_interface.msg import PandaCommand
++
+ from robohive.utils.min_jerk import generate_joint_space_min_jerk
+ 
+-import argparse
+ 
+-class JointPDPolicy(toco.PolicyModule):
+-    """
+-    Custom policy that performs PD control around a desired joint position
+-    """
+ 
+-    def __init__(self, desired_joint_pos, kp, kd, **kwargs):
+-        """
+-        Args:
+-            desired_joint_pos (int):    Number of steps policy should execute
+-            hz (double):                Frequency of controller
+-            kp, kd (torch.Tensor):     PD gains (1d array)
+-        """
+-        super().__init__(**kwargs)
++class FrankaArm(Node):
+ 
+-        self.kp = torch.nn.Parameter(kp)
+-        self.kd = torch.nn.Parameter(kd)
+-        self.q_desired = torch.nn.Parameter(desired_joint_pos)
++    interfaces = {
++        'apply_commands': ApplyCommands,
++        'get_sensors': GetSensors,
++        'connect': Connect,
++        'close': Close
++    }
+ 
+-        # Initialize modules
+-        self.feedback = toco.modules.JointSpacePD(self.kp, self.kd)
++    def __init__(self, **kwargs):
++        super().__init__('panda_client')
+ 
+-    def forward(self, state_dict: Dict[str, torch.Tensor]):
+-        # Parse states
+-        q_current = state_dict["joint_positions"]
+-        qd_current = state_dict["joint_velocities"]
+-        self.feedback.Kp = torch.diag(self.kp)
+-        self.feedback.Kd = torch.diag(self.kd)
++        self.client_names = {}
++        for name, type in FrankaArm.interfaces.items():
++            client = self.create_client(type, name)
+ 
+-        # Execute PD control
+-        output = self.feedback(
+-            q_current, qd_current, self.q_desired, torch.zeros_like(qd_current)
+-        )
+-        return {"joint_torques": output}
++            while not client.wait_for_service(timeout_sec=1.0):
++                self.get_logger().info(f'service {name} not available, waiting again...')
+ 
++            self.client_names[name] = client
+ 
++    def connect(self):
++        request = FrankaArm.interfaces['connect'].Request()
++        self.future = self.client_names['connect'].call_async(request)
+ 
+-class FrankaArm(hardwareBase):
+-    def __init__(self, name, ip_address, gain_scale=1.0, reset_gain_scale=1.0, **kwargs):
+-        self.name = name
+-        self.ip_address = ip_address
+-        self.robot = None
+-        self.gain_scale = gain_scale
+-        self.reset_gain_scale = reset_gain_scale
++        rclpy.spin_until_future_complete(self, self.future)
++        return self.future.result()
+ 
+ 
+-    def connect(self, policy=None):
+-        """Establish hardware connection"""
+-        connection = False
+-        # Initialize self.robot interface
+-        print("Connecting to {}: ".format(self.name), end="")
+-        try:
+-            self.robot = RobotInterface(
+-                ip_address=self.ip_address,
+-                enforce_version=False
+-            )
+-            print("Success")
+-        except Exception as e:
+-            self.robot = None # declare dead
+-            print("Failed with exception: ", e)
+-            return connection
++    def apply_commands(self, q_desired=None, kp=None, kd=None):
++        request = FrankaArm.interfaces['apply_commands'].Request()
+ 
+-        print("Testing {} connection: ".format(self.name), end="")
+-        connection = self.okay()
+-        if connection:
+-            print("okay")
+-            self.reset() # reset the robot before starting operaions
+-            if policy==None:
+-                # Create policy instance
+-                s_initial = self.get_sensors()
+-                policy = JointPDPolicy(
+-                    desired_joint_pos=s_initial['joint_pos'],
+-                    kp=self.gain_scale * torch.Tensor(self.robot.metadata.default_Kq),
+-                    kd=self.gain_scale * torch.Tensor(self.robot.metadata.default_Kqd),
+-                )
++        request.command = PandaCommand(position=q_desired)
++        self.future = self.client_names['apply_commands'].call_async(request)
+ 
+-            # Send policy
+-            print("\nRunning PD policy...")
+-            self.robot.send_torch_policy(policy, blocking=False)
+-        else:
+-            print("Not ready. Please retry connection")
++        return
+ 
+-        return connection
++    def get_sensors(self):
++        request = FrankaArm.interfaces['get_sensors'].Request()
+ 
++        self.future = self.client_names['get_sensors'].call_async(request)
++        rclpy.spin_until_future_complete(self, self.future)
+ 
+-    def okay(self):
+-        """Return hardware health"""
+-        okay = False
+-        if self.robot:
+-            try:
+-                state = self.robot.get_robot_state()
+-                delay = time.time() - (state.timestamp.seconds + 1e-9 * state.timestamp.nanos)
+-                assert delay < 5, "Acquired state is stale by {} seconds".format(delay)
+-                okay = True
+-            except:
+-                self.robot = None # declare dead
+-                okay = False
+-        return okay
++        state = self.future.result().state
+ 
++        return {'joint_pos': state.position, 'joint_vel': state.velocity}
+ 
+     def close(self):
+-        """Close hardware connection"""
+-        if self.robot:
+-            print("Terminating PD policy: ", end="")
+-            try:
+-                self.reset()
+-                state_log = self.robot.terminate_current_policy()
+-                print("Success")
+-            except:
+-                # print("Failed. Resetting directly to home: ", end="")
+-                print("Resetting Failed. Exiting: ", end="")
+-            self.robot = None
+-            print("Done")
+-        return True
+-
++        self.reset()
+ 
+-    def reconnect(self):
+-        print("Attempting re-connection")
+-        self.connect()
+-        while not self.okay():
+-            self.connect()
+-            time.sleep(2)
+-        print("Re-connection success")
++        request = FrankaArm.interfaces['close'].Request()
++        self.future = self.client_names['close'].call_async(request)
+ 
++        rclpy.shutdown()
+ 
+     def reset(self, reset_pos=None, time_to_go=5):
+-        """Reset hardware"""
+-
+-        if self.okay():
+-            if self.robot.is_running_policy(): # Is user controller?
+-                print("Resetting using user controller")
+-
+-                if reset_pos == None:
+-                    reset_pos = torch.Tensor(self.robot.metadata.rest_pose)
+-                elif not torch.is_tensor(reset_pos):
+-                    reset_pos = torch.Tensor(reset_pos)
+-
+-                # Use registered controller
+-                q_current = self.get_sensors()['joint_pos']
+-                # generate min jerk trajectory
+-                dt = 0.1
+-                waypoints =  generate_joint_space_min_jerk(start=q_current, goal=reset_pos, time_to_go=time_to_go, dt=dt)
+-                # reset using min_jerk traj
+-                for i in range(len(waypoints)):
+-                    self.apply_commands(
+-                            q_desired=waypoints[i]['position'],
+-                            kp=self.reset_gain_scale * torch.Tensor(self.robot.metadata.default_Kq),
+-                            kd=self.reset_gain_scale * torch.Tensor(self.robot.metadata.default_Kqd),
+-                        )
+-                    time.sleep(dt)
+-
+-                # reset back gains to gain-policy
+-                self.apply_commands(
+-                        kp=self.gain_scale*torch.Tensor(self.robot.metadata.default_Kq),
+-                        kd=self.gain_scale*torch.Tensor(self.robot.metadata.default_Kqd)
+-                    )
+-            else:
+-                # Use default controller
+-                print("Resetting using default controller")
+-                self.robot.go_home(time_to_go=time_to_go)
+-        else:
+-            print("Can't connect to the robot for reset. Attemping reconnection and trying again")
+-            self.reconnect()
+-            self.reset(reset_pos, time_to_go)
+-
+-
+-    def get_sensors(self):
+-        """Get hardware sensors"""
+-        try:
+-            joint_pos = self.robot.get_joint_positions()
+-            joint_vel = self.robot.get_joint_velocities()
+-        except:
+-            print("Failed to get current sensors: ", end="")
+-            self.reconnect()
+-            return self.get_sensors()
+-        return {'joint_pos': joint_pos, 'joint_vel':joint_vel}
+-
+-
+-    def apply_commands(self, q_desired=None, kp=None, kd=None):
+-        """Apply hardware commands"""
+-        udpate_pkt = {}
+-        if q_desired is not None:
+-            udpate_pkt['q_desired'] = q_desired if torch.is_tensor(q_desired) else torch.tensor(q_desired)
+-        if kp is not None:
+-            udpate_pkt['kp'] = kp if torch.is_tensor(kp) else torch.tensor(kp)
+-        if kd is not None:
+-            udpate_pkt['kd'] = kd if torch.is_tensor(kd) else torch.tensor(kd)
+-        assert udpate_pkt, "Atleast one parameter needs to be specified for udpate"
+-
+-        try:
+-            self.robot.update_current_policy(udpate_pkt)
+-        except Exception as e:
+-            print("1> Failed to udpate policy with exception", e)
+-            self.reconnect()
++        home = np.array([0.035972153270453736, 0.26206892568271034, -0.09772715938167076, -1.3994067706311577, -0.009183868408203125, 1.6383829876946538, -0.011601826569581752])
++
++        # Use registered controller
++        q_current = self.get_sensors()['joint_pos']
++        # generate min jerk trajectory
++        dt = 0.1
++        waypoints =  generate_joint_space_min_jerk(start=q_current, goal=home, time_to_go=5, dt=dt)
++        # reset using min_jerk traj
++        for i in range(len(waypoints)):
++            self.apply_commands(q_desired=waypoints[i]['position'])
++            time.sleep(dt)
+ 
+-
+-    def __del__(self):
+-        self.close()
+-
+-
+-# Get inputs from user
+-def get_args():
+-    parser = argparse.ArgumentParser(description="Polymetis based Franka client")
+-
+-    parser.add_argument("-i", "--server_ip",
+-                        type=str,
+-                        help="IP address or hostname of the franka server",
+-                        default="localhost") # 10.0.0.123 # "169.254.163.91",
+-    return parser.parse_args()
+-
+-
+-if __name__ == "__main__":
+-
+-    args = get_args()
+-
+-    # user inputs
+-    time_to_go = 1*np.pi
+-    m = 0.5  # magnitude of sine wave (rad)
+-    T = 2.0  # period of sine wave
+-    hz = 50  # update frequency
+-
+-    # Initialize robot
+-    franka = FrankaArm(name="Franka-Demo", ip_address=args.server_ip)
+-
+-    # connect to robot with default policy
+-    assert franka.connect(policy=None), "Connection to robot failed."
+-
+-    # reset using the user controller
+-    franka.reset()
+-
+-    # Update policy to execute a sine trajectory on joint 6 for 5 seconds
+-    print("Starting sine motion updates...")
+-    s_initial = franka.get_sensors()
+-    q_initial = s_initial['joint_pos'].clone()
+-    q_desired = s_initial['joint_pos'].clone()
+-
+-    for i in range(int(time_to_go * hz)):
+-        q_desired[5] = q_initial[5] + m * np.sin(np.pi * i / (T * hz))
+-        # q_desired[5] = q_initial[5] + 0.05*np.random.uniform(high=1, low=-1)
+-        # q_desired = q_initial + 0.01*np.random.uniform(high=1, low=-1, size=7)
+-        franka.apply_commands(q_desired = q_desired)
+-        time.sleep(1 / hz)
+-
+-    # Udpate the gains
+-    kp_new = 0.1* torch.Tensor(franka.robot.metadata.default_Kq)
+-    kd_new = 0.1* torch.Tensor(franka.robot.metadata.default_Kqd)
+-    franka.apply_commands(kp=kp_new, kd=kd_new)
+-
+-    print("Starting sine motion updates again with updated gains.")
+-    for i in range(int(time_to_go * hz)):
+-        q_desired[5] = q_initial[5] + m * np.sin(np.pi * i / (T * hz))
+-        franka.apply_commands(q_desired = q_desired)
+-        time.sleep(1 / hz)
+-
+-    print("Closing and exiting hardware connection")
+-    franka.close()
++    def okay(self):
++        return True
+\ No newline at end of file
+diff --git a/robohive/robot/hardware_robotiq.py b/robohive/robot/hardware_robotiq.py
+index 27b4e2f..12982a1 100644
+--- a/robohive/robot/hardware_robotiq.py
++++ b/robohive/robot/hardware_robotiq.py
+@@ -1,179 +1,52 @@
+-from enum import Flag
+-from polymetis import GripperInterface
+-from robohive.robot.hardware_base import hardwareBase
+-
+-import numpy as np
+-import argparse
+ import time
++import rclpy
++from rclpy.action import ActionClient
++from rclpy.node import Node
+ 
+-class Robotiq(hardwareBase):
+-    def __init__(self, name, ip_address, **kwargs):
+-        self.name = name
+-        self.ip_address = ip_address
+-        self.robot = None
+-        self.max_width = 0.0
+-        self.min_width = 0.0
+-
+-    def connect(self, policy=None):
+-        """Establish hardware connection"""
+-        connection = False
+-        # Initialize self.robot interface
+-        print("RBQ:> Connecting to {}: ".format(self.name), end="")
+-        try:
+-            self.robot = GripperInterface(
+-                ip_address=self.ip_address,
+-            )
+-            print("Success")
+-        except Exception as e:
+-            self.robot = None # declare dead
+-            print("Failed with exception: ", e)
+-            return connection
+-
+-        print("RBQ:> Testing {} connection: ".format(self.name), end="")
+-        if self.okay():
+-            print("Okay")
+-            # get max_width based on polymetis version
+-            if self.robot.metadata:
+-                self.max_width = self.robot.metadata.max_width
+-            elif self.robot.get_state().max_width:
+-                self.max_width = self.robot.get_state().max_width
+-            else:
+-                self.max_width = 0.085
+-            connection = True
+-        else:
+-            print("Not ready. Please retry connection")
+-
+-        return connection
+-
+-    def okay(self):
+-        """Return hardware health"""
+-        okay = False
+-        if self.robot:
+-            try:
+-                state = self.robot.get_state()
+-                delay = time.time() - (state.timestamp.seconds + 1e-9 * state.timestamp.nanos)
+-                assert delay < 5, "Acquired state is stale by {} seconds".format(delay)
+-                okay = True
+-            except:
+-                self.robot = None # declare dead
+-                okay = False
+-        return okay
++import numpy as np
+ 
+-    def close(self):
+-        """Close hardware connection"""
+-        if self.robot:
+-            print("RBQ:> Resetting robot before close: ", end="")
+-            try:
+-                self.reset()
+-                print("RBQ:> Success: ", end="")
+-            except:
+-                print("RBQ:> Failed. Exiting : ", end="")
+-            self.robot = None
+-            print("Connection closed")
+-        return True
++from control_msgs.action import GripperCommand
++from control_msgs.msg import GripperCommand as GripperCommandMsg
++from robotiq_85_msgs.msg import GripperStat
+ 
+-    def reconnect(self):
+-        print("RBQ:> Attempting re-connection")
+-        self.connect()
+-        while not self.okay():
+-            self.connect()
+-            time.sleep(2)
+-        print("RBQ:> Re-connection success")
++from rclpy.task import Future
+ 
++class Robotiq(Node):
+ 
+-    def reset(self, width=None, **kwargs):
+-        """Reset hardware"""
+-        if not width:
+-            width = self.max_width
+-        self.apply_commands(width=width, **kwargs)
++    max_width = 0.85
++    gripper_state = None
+ 
++    def __init__(self, **kwargs):
++        return
++        super().__init__('robotiq_action_client')
++        self._action_client = ActionClient(self, GripperCommand, '/robotiq_gripper_controller/gripper_cmd')
+ 
+-    def get_sensors(self):
+-        """Get hardware sensors"""
+-        try:
+-            curr_state = self.robot.get_state()
+-        except:
+-            print("RBQ:> Failed to get current sensors: ", end="")
+-            self.reconnect()
+-            return self.get_sensors()
+-        return np.array([curr_state.width])
++        self.create_subscription(GripperStat, "/gripper/stat", self._state_topic_callback, 1)
+ 
+     def apply_commands(self, width:float, speed:float=0.1, force:float=0.1):
+-        assert width>=0.0 and width<=self.max_width, "Gripper desired width ({}) is out of bound (0,{})".format(width, self.max_width)
+-        self.robot.goto(width=width, speed=speed, force=force)
+-        return 0
+-
+-
+-
+-# Get inputs from user
+-def get_args():
+-    parser = argparse.ArgumentParser(description="Polymetis based gripper client")
++        print(width)
++        goal_msg = GripperCommand.Goal(command=GripperCommandMsg(position=width, max_effort=5.0))
++        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
++        # rclpy.spin_until_future_complete(self, self._send_goal_future)
+ 
+-    parser.add_argument("-i", "--server_ip",
+-                        type=str,
+-                        help="IP address or hostname of the franka server",
+-                        default="localhost") # 172.16.0.1
+-
+-    return parser.parse_args()
+-
+-
+-if __name__ == "__main__":
+-
+-    args = get_args()
+-
+-    # user inputs
+-    time_to_go = 2.0*np.pi
+-    m = 0.5  # magnitude of sine wave (rad)
+-    T = 2.0  # period of sine wave
+-    hz = 50  # update frequency
+-
+-    # Initialize robot
+-    rbq = Robotiq(name="Demo_robotiq", ip_address=args.server_ip)
+-
+-    # connect to robot
+-    status = rbq.connect()
+-    assert status, "Can't connect to Robotiq"
+-
+-    # reset using the user controller
+-    rbq.reset()
+-
+-    # Close gripper
+-    des_width = 0.0
+-    rbq.apply_commands(width=des_width)
+-    time.sleep(2)
+-    curr_width = rbq.get_sensors()
+-    print("RBQ:> Testing gripper close: Desired:{}, Achieved:{}".format(des_width, curr_width))
++    def get_sensors(self):
++        self.gripper_state = Future()
++        rclpy.spin_until_future_complete(self, self.gripper_state)
++        return np.array([self.gripper_state.result().position])
+ 
+-    # Open gripper
+-    des_width = rbq.max_width
+-    rbq.apply_commands(width=des_width)
+-    time.sleep(2)
+-    curr_width = rbq.get_sensors()
+-    print("RBQ:> Testing gripper Open: Desired:{}, Achieved:{}".format(des_width, curr_width))
++    def connect(self):
++        self._action_client.wait_for_server()
+ 
+-    # Contineous control
+-    for i in range(int(time_to_go * hz)):
+-        des_width = rbq.max_width * ( 1 + np.cos(np.pi * i / (T * hz)) )/2
+-        rbq.apply_commands(width=des_width)
+-        time.sleep(1 / hz)
++    def close(self):
++        self.reset()
++        rclpy.shutdown()
+ 
+-    # Drive gripper using keyboard
+-    if False:
+-        from vtils.keyboard import key_input as keyboard
+-        ky = keyboard.Key()
+-        sen = None
+-        print("Press 'q' to stop listening")
+-        while sen != 'q':
+-            sen = ky.get_sensor()
+-            if sen is not None:
+-                print(sen, end=", ", flush=True)
+-                if sen == 'up':
+-                    rbq.apply_commands(width=rbq.max_width)
+-                elif sen=='down':
+-                    rbq.apply_commands(width=rbq.min_width)
+-            time.sleep(.01)
++    def okay(self):
++        return True
+ 
++    def reset(self, width=0.1, **kwargs):
++        self.apply_commands(width=0.1)
+ 
+-    # close connection
+-    rbq.close()
+-    print("RBQ:> Demo Finished")
++    def _state_topic_callback(self, msg):
++        self.gripper_state.set_result(msg)
++        self.gripper_state.done()
+\ No newline at end of file
+diff --git a/robohive/robot/robot.py b/robohive/robot/robot.py
+index bc1d47d..4acf9fa 100644
+--- a/robohive/robot/robot.py
++++ b/robohive/robot/robot.py
+@@ -10,6 +10,7 @@ from robohive.utils.quat_math import quat2euler
+ from robohive.utils.prompt_utils import prompt, Prompt
+ import time
+ import numpy as np
++import rclpy
+ from collections import deque
+ import os
+ np.set_printoptions(precision=4)
+@@ -52,6 +53,8 @@ class Robot():
+                 **kwargs,
+             ):
+ 
++        rclpy.init()
++
+         if kwargs != {}:
+             prompt("Warning: Unused kwargs found: {}".format(kwargs), type=Prompt.WARN)
+         self.name = robot_name+'(sim)' if is_hardware is None else robot_name+'(hdr)'
+-- 
+2.34.1
+
+
+From f53e6d986ca96902ea080da4465139c5e0cff71c Mon Sep 17 00:00:00 2001
+From: Andrea Rosasco <andrearosasco.ar@gmail.com>
+Date: Fri, 23 Feb 2024 11:18:31 +0100
+Subject: [PATCH 4/4] added franka hand gripper
+
+---
+ robohive/robot/hardware_franka_hand.py | 67 ++++++++++++++++++++++++++
+ 1 file changed, 67 insertions(+)
+ create mode 100644 robohive/robot/hardware_franka_hand.py
+
+diff --git a/robohive/robot/hardware_franka_hand.py b/robohive/robot/hardware_franka_hand.py
+new file mode 100644
+index 0000000..bca37c3
+--- /dev/null
++++ b/robohive/robot/hardware_franka_hand.py
+@@ -0,0 +1,67 @@
++import time
++import numpy as np
++
++import rclpy
++from rclpy.node import Node
++
++from panda_interface.srv import ApplyCommandsGripper, ConnectGripper, GetSensorsGripper
++from panda_interface.msg import PandaGripperCommand
++
++
++
++class FrankaHand(Node):
++
++    interfaces = {
++        'apply_commands_gripper': ApplyCommandsGripper,
++        'get_sensors_gripper': GetSensorsGripper,
++        'connect_gripper': ConnectGripper,
++    }
++
++    def __init__(self, **kwargs):
++        super().__init__('panda_gripper_client')
++
++        self.client_names = {}
++        for name, type in FrankaHand.interfaces.items():
++            client = self.create_client(type, name)
++
++            while not client.wait_for_service(timeout_sec=1.0):
++                self.get_logger().info(f'service {name} not available, waiting again...')
++
++            self.client_names[name] = client
++
++    def connect(self):
++        request = FrankaHand.interfaces['connect_gripper'].Request()
++        self.future = self.client_names['connect_gripper'].call_async(request)
++
++        rclpy.spin_until_future_complete(self, self.future)
++        return self.future.result()
++
++
++    def apply_commands(self, width:float, speed:float=0.1, force:float=0.1):
++        request = FrankaHand.interfaces['apply_commands_gripper'].Request()
++
++        request.command = PandaGripperCommand(width=width)
++        self.future = self.client_names['apply_commands_gripper'].call_async(request)
++        # rclpy.spin_until_future_complete(self, self.future)
++
++        return
++
++    def get_sensors(self):
++        request = FrankaHand.interfaces['get_sensors_gripper'].Request()
++
++        self.future = self.client_names['get_sensors_gripper'].call_async(request)
++        rclpy.spin_until_future_complete(self, self.future)
++
++        state = self.future.result().state
++
++        return np.array([state.width])
++
++    def close(self):
++        self.reset()
++        rclpy.shutdown()
++
++    def reset(self, width=0.1, **kwargs):
++        self.apply_commands(width=width)
++
++    def okay(self):
++        return True
+-- 
+2.34.1
+
