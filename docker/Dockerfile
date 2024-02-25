@@ -1,13 +1,14 @@
 FROM ubuntu:20.04
  
  
-ARG USER=robotdataset
-ARG PASSWORD=robotdataset
+ARG USER=teleop
+ARG PASSWORD=$USER
+ARG ENV=SUSER
  
 ARG CONDA_SCRIPT=Miniforge3-23.3.1-1-Linux-x86_64.sh
 ARG CONDA_LINK=https://github.com/conda-forge/miniforge/releases/download/23.3.1-1/${CONDA_SCRIPT}
 
-ARG CONDA_PREFIX=/home/${USER}/miniforge3/envs/${USER}
+ARG CONDA_PREFIX=/home/${USER}/miniforge3/envs/${ENV}
 
 ARG pip=${CONDA_PREFIX}/bin/pip
 ARG colcon=${CONDA_PREFIX}/bin/colcon
@@ -39,7 +40,7 @@ RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends wget 
 && sudo find /home/${USER}/miniforge3 -follow -type f -name '*.pyc' -delete \
 && /home/${USER}/miniforge3/bin/mamba clean -afy \
 && rm ${CONDA_SCRIPT} \
-&& echo "mamba activate robotdataset" >> /home/${USER}/.bashrc
+&& echo "mamba activate ${ENV}" >> /home/${USER}/.bashrc
 
 # Not sure if
 RUN sudo apt update && sudo apt install pkg-config libhdf5-dev libgl1-mesa-glx libosmesa6 -y
@@ -59,7 +60,7 @@ RUN wget https://packagecloud.io/install/repositories/github/git-lfs/script.deb.
 COPY ./robohive.patch ./robohive.patch
 RUN git clone --branch v0.6 --recursive https://github.com/vikashplus/robohive.git \
 && cd robohive && git apply ../robohive.patch && rm ../robohive.patch \
-&& $pip install -e .[a0] && /home/${USER}/miniforge3/envs/${USER}/bin/robohive_init
+&& $pip install -e .[a0] && /home/${USER}/miniforge3/envs/${ENV}/bin/robohive_init
 
 # Install panda-ros2
 RUN wget https://github.com/JeanElsner/panda-py/releases/download/v0.7.4/panda_py_0.7.4_libfranka_0.8.0.zip \
