@@ -3,7 +3,7 @@ from clearconf import BaseConfig
 class Config(BaseConfig):
     class Env:
         name = 'rpFrankaRobotiqData-v0' # environment to load
-        args = {'is_hardware': True, 'config_path': './franka_robotiq.config'}
+        args = {'is_hardware': True, 'config_path': './assets/franka_robotiq.config'}
     class Noise:
         seed = 1234 # seed for generating environment instances
         reset_noise = 0.0 # Amplitude of noise during reset

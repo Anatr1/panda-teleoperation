@@ -26,7 +26,7 @@ from config import Config as cfg
 def setup_env():
     np.random.seed(cfg.Noise.seed)
 
-    env = gym.make(cfg.Env.name, **cfg.Env.args_args.to_dict())
+    env = gym.make(cfg.Env.name, **cfg.Env.args)
     env.seed(cfg.Noise.seed)
 
     env.env.mujoco_render_frames = True if 'onscreen' in cfg.Output.render else False
