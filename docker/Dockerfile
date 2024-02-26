@@ -25,7 +25,7 @@ RUN apt update \
 RUN addgroup ${USER} \
 && useradd -ms /bin/bash ${USER} -g ${USER} \
 && echo "${USER}:${PASSWORD}" | chpasswd \
-&& usermod -a -G sudo ${USER} \
+&& usermod -a -G sudo,dialout ${USER} \
 && sed -i.bak -e 's/%sudo\s\+ALL=(ALL\(:ALL\)\?)\s\+ALL/%sudo ALL=NOPASSWD:ALL/g' /etc/sudoers
  
 USER ${USER}
