@@ -3,7 +3,7 @@ FROM ubuntu:20.04
  
 ARG USER=teleop
 ARG PASSWORD=$USER
-ARG ENV=SUSER
+ARG ENV=$USER
  
 ARG CONDA_SCRIPT=Miniforge3-23.3.1-1-Linux-x86_64.sh
 ARG CONDA_LINK=https://github.com/conda-forge/miniforge/releases/download/23.3.1-1/${CONDA_SCRIPT}
