@@ -1,7 +1,7 @@
 From 868806f179e1e1335fc49d2cda028822ad204410 Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Fri, 23 Feb 2024 11:15:22 +0100
-Subject: [PATCH 2/8] changed step() to reset() to avoid sudden jump
+Subject: [PATCH 1/8] changed step() to reset() to avoid sudden jump
 
 ---
  robohive/envs/env_base.py | 6 +++---
@@ -32,7 +32,7 @@ index 9bff015..1cfa7f5 100644
 From 6ea0e587b9f886a021eb9bc67c18302f7d9f14e9 Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Fri, 23 Feb 2024 11:17:14 +0100
-Subject: [PATCH 3/8] switched from polymetis to ros
+Subject: [PATCH 2/8] switched from polymetis to ros
 
 ---
  robohive/robot/hardware_franka.py  | 301 +++++------------------------
@@ -625,7 +625,7 @@ index bc1d47d..4acf9fa 100644
 From f53e6d986ca96902ea080da4465139c5e0cff71c Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Fri, 23 Feb 2024 11:18:31 +0100
-Subject: [PATCH 4/8] added franka hand gripper
+Subject: [PATCH 3/8] added franka hand gripper
 
 ---
  robohive/robot/hardware_franka_hand.py | 67 ++++++++++++++++++++++++++
@@ -712,7 +712,7 @@ index 0000000..bca37c3
 From 77dbf8f02cb8783f79b1e9eb464193ac0ff1c9c2 Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Fri, 23 Feb 2024 11:44:09 +0100
-Subject: [PATCH 5/8] added teleoperation entrypoinit
+Subject: [PATCH 4/8] added teleoperation entrypoinit
 
 ---
  setup.py | 1 +
@@ -737,7 +737,7 @@ index c8e2898..82d1761 100644
 From 2f0dacce0086e228751d550322493d59466f66bc Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Fri, 23 Feb 2024 11:45:24 +0100
-Subject: [PATCH 6/8] temporary removed dataset collection features and outer
+Subject: [PATCH 5/8] temporary removed dataset collection features and outer
  loop
 
 ---
@@ -1032,7 +1032,7 @@ index 01d5fd0..4bd89a4 100644
 From e0ec21cf8d53a938a9fd3c1146e1646762c914db Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Mon, 26 Feb 2024 11:39:41 +0100
-Subject: [PATCH 7/8] added gain parameter to franka
+Subject: [PATCH 6/8] added gain parameter to franka
 
 ---
  robohive/robot/hardware_franka.py | 6 +++---
@@ -1071,7 +1071,7 @@ index 1fdb53e..7b5b100 100644
 From 4a54a74f0117626c0d45fcec470bd4c0cdfd28d8 Mon Sep 17 00:00:00 2001
 From: Andrea Rosasco <andrearosasco.ar@gmail.com>
 Date: Mon, 26 Feb 2024 11:48:05 +0100
-Subject: [PATCH 8/8] fixed bug in robotiq init
+Subject: [PATCH 7/8] fixed bug in robotiq init
 
 ---
  robohive/robot/hardware_robotiq.py | 1 -
@@ -1089,6 +1089,39 @@ index 12982a1..96f0250 100644
          super().__init__('robotiq_action_client')
          self._action_client = ActionClient(self, GripperCommand, '/robotiq_gripper_controller/gripper_cmd')
  
+-- 
+2.34.1
+
+
+From 36fd95f3c2a202e08682d51c3603220fa60679ab Mon Sep 17 00:00:00 2001
+From: Andrea Rosasco <andrearosasco.ar@gmail.com>
+Date: Mon, 26 Feb 2024 16:09:52 +0100
+Subject: [PATCH 8/8] adjusted home position
+
+---
+ robohive/robot/hardware_franka.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/robohive/robot/hardware_franka.py b/robohive/robot/hardware_franka.py
+index 7b5b100..21dbe00 100644
+--- a/robohive/robot/hardware_franka.py
++++ b/robohive/robot/hardware_franka.py
+@@ -66,7 +66,7 @@ class FrankaArm(Node):
+         rclpy.shutdown()
+ 
+     def reset(self, reset_pos=None, time_to_go=5):
+-        home = np.array([0.035972153270453736, 0.26206892568271034, -0.09772715938167076, -1.3994067706311577, -0.009183868408203125, 1.6383829876946538, -0.011601826569581752])
++        home = np.array([0.0, 0.3, 0.0, -1.15, 0.0, 1.5, 0.0])
+ 
+         # Use registered controller
+         q_current = self.get_sensors()['joint_pos']
+@@ -79,4 +79,4 @@ class FrankaArm(Node):
+             time.sleep(dt)
+ 
+     def okay(self):
+-        return True
+\ No newline at end of file
++        return True
 -- 
 2.34.1
 
