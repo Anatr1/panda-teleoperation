@@ -22,11 +22,6 @@ from robohive.robot import robot
 import my_env
 
 
-try:
-    from oculus_reader import OculusReader
-except ImportError as e:
-    raise ImportError("(Missing oculus_reader. HINT: Install and perform the setup instructions from https://github.com/rail-berkeley/oculus_reader)")
-
 # VR ==> MJ mapping when teleOp user is standing infront of the robot
 def vrfront2mj(pose):
     pos = np.zeros([3])
@@ -83,8 +78,7 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
     # x_range, y_range, z_range, roll_range, pitch_range, yaw_range, gripper_range):
 
     # seed and load environments
-    env_args = {'is_hardware': True, 
-    
+    env_args = {'is_hardware': False, 
                 'config_path': './teleop/my_env/franka_robotiq.config', 
                 # 'model_path': '/franka_robotiq.xml', 
                 # 'target_pose': np.array([0, 0, 0, 0, 0, 0, 0, 0])
@@ -99,21 +93,9 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
     env.sim.model.site_rgba[goal_sid][3] = 1 # make visible
 
     # prep input device
-    oculus_reader = OculusReader()
     pos_offset = env.sim.model.site_pos[goal_sid].copy()
     quat_offset = env.sim.model.site_quat[goal_sid].copy()
-    oculus_reader_ready = False
-    while not oculus_reader_ready:
-        # Get the controller and headset positions and the button being pushed
-        transformations, buttons = oculus_reader.get_transformations_and_buttons()
-        if transformations or buttons:
-            oculus_reader_ready = True
-        else:
-            print("Oculus reader not ready. Check that headset is awake and controller are on")
-        time.sleep(0.10)
-
-    print('Oculus Ready!')
-
+   
     # default actions
     act = np.zeros(env.action_space.shape)
     gripper_state = delta_gripper = 0
@@ -130,96 +112,10 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
     act = np.zeros(env.action_space.shape)
     gripper_state = 0
 
-    # start rolling out
     while True:
-
-        # poll input device --------------------------------------
-        transformations, buttons = oculus_reader.get_transformations_and_buttons()
-
-        # Check for reset request
-        if buttons and buttons['B']:
-            env.sim.model.site_pos[goal_sid] = pos_offset
-            env.sim.model.site_quat[goal_sid] = quat_offset
-            print("Rollout done. ")
-            break
-            
-
-        # recover actions using input ----------------------------
-        if transformations and 'r' in transformations:
-            right_controller_pose = transformations['r']
-            # VRpos, VRquat = vrfront2mj(right_controller_pose)
-            VRpos, VRquat = vrbehind2mj(right_controller_pose)
-
-            # Update targets if engaged
-            if buttons['RG']:
-                # dVRP/R = VRP/Rt - VRP/R0
-                dVRP = VRpos - VRP0
-                # dVRR = VRquat - VRR0
-                dVRR = diffQuat(VRR0, VRquat)
-                # MJP/Rt =  MJP/R0 + dVRP/R
-                env.sim.model.site_pos[goal_sid] = MJP0 + dVRP
-                env.sim.model.site_quat[goal_sid] = mulQuat(MJR0, dVRR)
-                delta_gripper = buttons['rightTrig'][0]
-
-            # Adjust origin if not engaged
-            else:
-                # RP/R0 = RP/Rt
-                MJP0 = env.sim.model.site_pos[goal_sid].copy()
-                MJR0 = env.sim.model.site_quat[goal_sid].copy()
-
-                # VP/R0 = VP/Rt
-                VRP0 = VRpos
-                VRR0 = VRquat
-
-            # udpate desired pos
-            target_pos = env.sim.model.site_pos[goal_sid]
-            # target_pos[:] += pos_scale*delta_pos
-            # update desired orientation
-            target_quat =  env.sim.model.site_quat[goal_sid]
-            # target_quat[:] = mulQuat(euler2quat(rot_scale*delta_euler), target_quat)
-            # update desired gripper
-            gripper_state = gripper_scale*delta_gripper # TODO: Update to be delta
-
-            # Find joint space solutions
-            ik_result = qpos_from_site_pose(
-                        physics = env.sim,
-                        site_name = teleop_site,
-                        target_pos= target_pos,
-                        target_quat= target_quat,
-                        inplace=False,
-                        regularization_strength=1.0)
-
-            # Command robot
-            if ik_result.success==False:
-                print(f"Status:{ik_result.success}, total steps:{ik_result.steps}, err_norm:{ik_result.err_norm}")
-            else:
-                act[:7] = ik_result.qpos[:7]
-                act[7:] = gripper_state
-                if action_noise:
-                    act = act + env.env.np_random.uniform(high=action_noise, low=-action_noise, size=len(act)).astype(act.dtype)
-                if env.normalize_act:
-                    print(act[-1])
-                    act = env.env.robot.normalize_actions(act)
-                    print(act[-1])
-        # print(f't={env.time:2.2}, a={act}, o={obs[:3]}')
-
-        # step env using action from t=>t+1 ----------------------
-        
         obs, rwd, done, env_info = env.step(act)
 
-        # Detect jumps
-        qpos_now = env_info['obs_dict']['qp_arm']
-        qpos_arm_err = np.linalg.norm(ik_result.qpos[:7]-qpos_now[:7])
-        if qpos_arm_err>0.5:
-            print("Jump detechted. Joint error {}. This is likely caused when hardware detects something unsafe. Resetting goal to where the arm curently is to avoid sudden jumps.".format(qpos_arm_err))
-            # Reset goal back to nominal position
-            env.sim.model.site_pos[goal_sid] = env.sim.data.site_xpos[teleop_sid]
-            env.sim.model.site_quat[goal_sid] = mat2quat(np.reshape(env.sim.data.site_xmat[teleop_sid], [3,-1]))
-
-    print("rollout end")
-    time.sleep(0.5)
-    # save and close
-    env.close()
+  
 
 if __name__ == '__main__':
     main()
