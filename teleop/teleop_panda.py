@@ -20,6 +20,7 @@ from robohive.utils.quat_math import euler2quat, euler2mat, mat2quat, diffQuat, 
 from robohive.utils.inverse_kinematics import IKResult, qpos_from_site_pose
 from robohive.robot import robot
 import my_env
+from scipy.spatial.transform import Rotation as R
 
 
 try:
@@ -54,6 +55,13 @@ def vrbehind2mj(pose):
     mat[2][:] = -1.*pose[1][:3]
 
     return pos, mat2quat(mat)
+
+def quat2euler(quat):
+    r = R.from_quat(quat)
+    return r.as_euler('xyz', degrees=True)
+
+def build_action(target_position, target_orientation, target_gripper, current_position, current_orientation, terminate=False):
+    return [target_gripper, target_position[0]-current_position[0], target_position[1]-current_position[1], target_position[2]-current_position[2], target_orientation[0]-current_orientation[0], target_orientation[1]-current_orientation[1], target_orientation[2]-current_orientation[2], int(terminate)]
 
 @click.command(help=DESC)
 @click.option('-e', '--env_name', type=str, help='environment to load', default='rpFrankaRobotiqData-v0')
@@ -130,6 +138,11 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
     act = np.zeros(env.action_space.shape)
     gripper_state = 0
 
+    reset = True
+    current_pos = [0, 0, 0]
+    current_rpy = [0, 0, 0]
+    #count = 0
+
     # start rolling out
     while True:
 
@@ -180,6 +193,20 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
             # update desired gripper
             gripper_state = gripper_scale*delta_gripper # TODO: Update to be delta
 
+            if reset:
+                current_pos = target_pos.copy()
+                current_rpy = quat2euler(target_quat)
+                reset = False
+                #count=+1
+            else:
+                #if count % 100 == 0:
+                print(build_action(target_pos, quat2euler(target_quat), gripper_state, current_pos, current_rpy))
+                current_pos = target_pos.copy()
+                current_rpy = quat2euler(target_quat)
+                #    count = 0
+                #else:
+                #    count+=1
+
             # Find joint space solutions
             ik_result = qpos_from_site_pose(
                         physics = env.sim,
@@ -188,6 +215,8 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
                         target_quat= target_quat,
                         inplace=False,
                         regularization_strength=1.0)
+            
+            #print(ik_result)
 
             # Command robot
             if ik_result.success==False:
@@ -198,9 +227,9 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
                 if action_noise:
                     act = act + env.env.np_random.uniform(high=action_noise, low=-action_noise, size=len(act)).astype(act.dtype)
                 if env.normalize_act:
-                    print(act[-1])
+                    #print(act[-1])
                     act = env.env.robot.normalize_actions(act)
-                    print(act[-1])
+                    #print(act[-1])
         # print(f't={env.time:2.2}, a={act}, o={obs[:3]}')
 
         # step env using action from t=>t+1 ----------------------
