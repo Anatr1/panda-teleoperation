@@ -20,8 +20,11 @@ from robohive.utils.quat_math import euler2quat, euler2mat, mat2quat, diffQuat, 
 from robohive.utils.inverse_kinematics import IKResult, qpos_from_site_pose
 from robohive.robot import robot
 import my_env
+import cv2
+import imageio
 from scipy.spatial.transform import Rotation as R
 
+INSTRUCTION = "Pick up the object"
 
 try:
     from oculus_reader import OculusReader
@@ -90,10 +93,12 @@ def build_action(target_position, target_orientation, target_gripper, current_po
 def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rollouts, output_format, camera, seed, render, goal_site, teleop_site, pos_scale, rot_scale, gripper_scale):
     # x_range, y_range, z_range, roll_range, pitch_range, yaw_range, gripper_range):
 
+    cap = cv2.VideoCapture(8)
+
     # seed and load environments
     env_args = {'is_hardware': True, 
-    
-                'config_path': './teleop/my_env/franka_robotiq.config', 
+                'config_path': '/home/teleop/project/teleop/my_env/franka_robotiq.config',
+                #'config_path': './teleop/my_env/franka_robotiq.config', 
                 # 'model_path': '/franka_robotiq.xml', 
                 # 'target_pose': np.array([0, 0, 0, 0, 0, 0, 0, 0])
                 }
@@ -142,6 +147,9 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
     current_pos = [0, 0, 0]
     current_rpy = [0, 0, 0]
     #count = 0
+
+    images = []
+    episode = []
 
     # start rolling out
     while True:
@@ -200,9 +208,33 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
                 #count=+1
             else:
                 #if count % 100 == 0:
-                print(build_action(target_pos, quat2euler(target_quat), gripper_state, current_pos, current_rpy))
+                print(f"Action: {build_action(target_pos, quat2euler(target_quat), gripper_state, current_pos, current_rpy)}")
+                joint_state = np.append(env_info['obs_dict']['qp_arm'], gripper_state).astype(np.float32)
+                print(f"Joint State: {joint_state}")
+                print(f"Instruct: {INSTRUCTION}")
+
+                
+
                 current_pos = target_pos.copy()
                 current_rpy = quat2euler(target_quat)
+
+                # Get an observation image from the connected usb camera with ID=4 with OpenCV
+                status, photo = cap.read()
+                print(photo.shape)
+                if not status:
+                    print("Camera not found")
+
+                images.append(photo)
+                episode.append({
+                    'image': np.asarray(photo),
+                    'state': joint_state,
+                    'action': build_action(target_pos, quat2euler(target_quat), gripper_state, current_pos, current_rpy),
+                    'language_instruction': INSTRUCTION
+                })
+
+                #cv2.imshow("Webcam Video Stream", photo)
+                
+
                 #    count = 0
                 #else:
                 #    count+=1
@@ -244,6 +276,25 @@ def main(env_name, env_args, reset_noise, action_noise, output, horizon, num_rol
             # Reset goal back to nominal position
             env.sim.model.site_pos[goal_sid] = env.sim.data.site_xpos[teleop_sid]
             env.sim.model.site_quat[goal_sid] = mat2quat(np.reshape(env.sim.data.site_xmat[teleop_sid], [3,-1]))
+
+    cap.release()
+    #cv2.destroyAllWindows()
+
+    episode.append({
+        'image': np.asarray(photo),
+        'state': joint_state,
+        'action': build_action(target_pos, quat2euler(target_quat), gripper_state, current_pos, current_rpy, terminate=True),
+        'language_instruction': INSTRUCTION
+    })
+
+    # Convert the images to numpy arrays and add them to a list
+    frames = [np.asarray(image) for image in images]
+
+    # Save the frames as an mp4 video
+    imageio.mimsave('episode.mp4', frames, fps=10)
+
+    # Save as npy
+    np.save('episode.npy', episode)
 
     print("rollout end")
     time.sleep(0.5)
